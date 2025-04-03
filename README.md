@@ -175,6 +175,8 @@ The application is primarily accessed through its graphical user interface (GUI)
 
 ------└── _internal/ 
 
+------└── 3PB-Analyzer-GUI.part1.rar to 3PB-Analyzer-GUI.part16.rar
+
 ------------└── …
 
 ├──.gitattributes
@@ -201,7 +203,7 @@ The application is primarily accessed through its graphical user interface (GUI)
 
 ## Running the EXE File
 
-Your executable (`3PB-Analyzer-GUI.exe`) is located within the `GUI` folder, along with an `_internal` folder.  ***\*These files must be in the same folder to run the program.\****  The functionality of the program will be identical to running the code in the development environment. 
+Your executable (`3PB-Analyzer-GUI.exe`) is located within the `GUI` folder, along with an `_internal` folder.  ***\*These files must be in the same folder to run the program.\****  The functionality of the program will be identical to running the code in the development environment. The new software in the RAR file now supports mean and median calculations.
 
 **Instructions:**
 
