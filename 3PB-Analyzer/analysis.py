@@ -5,6 +5,7 @@ Analysis module, containing the core logic for data analysis.
 import os
 import re
 import logging
+import statistics
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -251,16 +252,31 @@ def save_files(file_path, progress_callback, on_complete, min_window_size, max_w
     headers = ["File Name", "Max Force", "Stiffness", "Yield force", "Postyield Displacement", "Work to fracture"]
     ws.append(headers)
     last_first_char = None
+    region_data = []
     for index, entry in enumerate(all_results):
         file_name = entry[0]
         match = re.match(r"([A-Za-z]+)", file_name)
         current_first_char = match.group(1) if match else ''
         if last_first_char is not None and current_first_char != last_first_char:
+            if region_data:
+                average_data = calculate_average(region_data)
+                median_data = calculate_median(region_data)  # Call calculate_median
+                ws.append(["Average"] + average_data)
+                ws.append(["Median"] + median_data)  # Add median
+                region_data = []
             ws.append([])
             ws.append([])
+        region_data.append(entry[1:])
         ws.append(entry)
         last_first_char = current_first_char
         progress_callback(index + 1 + total_files, total_files * 2)
+
+    # Handle the last region
+    if region_data:
+        average_data = calculate_average(region_data)
+        median_data = calculate_median(region_data)  # Call calculate_median
+        ws.append(["Average"] + average_data)
+        ws.append(["Median"] + median_data)  # Add median
 
     ws.column_dimensions['A'].width = Excel_Type[0]
     ws.column_dimensions['B'].width = Excel_Type[1]
@@ -291,3 +307,29 @@ def save_files(file_path, progress_callback, on_complete, min_window_size, max_w
 
     failed_files_callback(failed_files)
     on_complete()
+
+
+def calculate_average(data):
+    """Calculates the average of each column in the data."""
+    num_cols = len(data[0])
+    averages = []
+    for i in range(num_cols):
+        column_values = [float(row[i]) for row in data]
+        avg = sum(column_values) / len(column_values)
+        averages.append(avg)
+    return averages
+
+
+def calculate_median(data):
+    """Calculates the median of each column of data"""
+    num_cols = len(data[0])
+    medians = []
+    for i in range(num_cols):
+        try:
+            column_values = [float(row[i]) for row in data]
+            median = statistics.median(column_values)
+            medians.append(median)
+        except (ValueError, TypeError) as e:
+            logging.error(f"Error calculating median for column {i}: {e}")
+            medians.append(None)  # Or use another appropriate default value
+    return medians
