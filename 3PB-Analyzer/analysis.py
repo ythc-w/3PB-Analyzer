@@ -51,28 +51,28 @@ def analyse_data(csv_file, x_column=DEFAULT_X_COLUMN, y_column=DEFAULT_Y_COLUMN,
         else:
             pre_index = pre_index_series.idxmax()
         first_index = force_col[force_col.index >= pre_index][force_col[force_col.index >= pre_index] >= preload].index.min()
-        last_index = None
-        for i in range(max_index + 1, len(force_col) - 1):
-            if force_col[i] >= force_col[i - 1]:
-                last_index = i-1
-                break
-        if last_index is None:
-            last_index = df[df[y_column] >= preload].index.max()
         if first_index is not None:
-            df = df.loc[first_index:last_index]
+            df = df.loc[first_index:]
         else:
             df = pd.DataFrame(columns=df.columns)
 
         x_data = df[x_column].values
         y_data = df[y_column].values
+        max_disp = df[x_column].max()
+        max_value = df[y_column].max()
+        results["Max Force"] = max_value
+
+        for index_select in range(len(y_data)):
+            if y_data[index_select] == max_value:
+                mv_index = index_select
+        for i in range(mv_index, len(y_data)):
+            if y_data[i] < (0.5*max_value):
+                x_data = x_data[:i]
+                y_data = y_data[:i]
+                break
 
         results_plot["x_data"] = x_data
         results_plot["y_data"] = y_data
-
-        max_disp = df[x_column].max()
-
-        max_value = df[y_column].max()
-        results["Max Force"] = max_value
 
         best_r2 = -1
         best_model = None
@@ -124,25 +124,14 @@ def analyse_data(csv_file, x_column=DEFAULT_X_COLUMN, y_column=DEFAULT_Y_COLUMN,
                     if i == len(x_data) - 1 and next_x is None:
                         next_x = x_data[best_end - 1]
                         next_y = y_data[best_end - 1]
-        max_index = int(np.argmax(y_data))
-
-        min_after_max_index = len(y_data) - 1
-        min_after_max_value = float('inf')
-
-        for i in range(max_index + 1, len(y_data)):
-            if 0.5 <= y_data[i] < min_after_max_value:
-                min_after_max_value = y_data[i]
-                min_after_max_index = i
 
         results["Yield force"] = next_y
         results_plot["yield_force_x"] = next_x
         results_plot["yield_force_y"] = next_y
-        postyield_displacement = x_data[min_after_max_index] - next_x
+        postyield_displacement = x_data[-1] - next_x
         results["Postyield Displacement"] = postyield_displacement
-
-        auc = np.trapz(y_data[:min_after_max_index], x_data[:min_after_max_index])
+        auc = np.trapz(y_data[:], x_data[:])
         results["Work to fracture"] = auc
-
         output_result = [results["Max Force"], results["Stiffness"], results.get("Yield force", "N/A"),
                          results.get("Postyield Displacement", "N/A"), results["Work to fracture"]]
 
