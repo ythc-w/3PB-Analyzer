@@ -171,13 +171,7 @@ The application is primarily accessed through its graphical user interface (GUI)
 
 ├── GUI/ 
 
-------├── 3PB-Analyzer-GUI.exe 
-
-------└── _internal/ 
-
-------└── 3PB-Analyzer-GUI.part1.rar to 3PB-Analyzer-GUI.part16.rar
-
-------------└── …
+------└── 3PB-Analyzer.part1.rar to 3PB-Analyzer.part13.rar
 
 ├──.gitattributes
 
@@ -203,46 +197,5 @@ The application is primarily accessed through its graphical user interface (GUI)
 
 ## Running the EXE File
 
-Your executable (`3PB-Analyzer-GUI.exe`) is located within the `GUI` folder, along with an `_internal` folder.  ***\*These files must be in the same folder to run the program.\****  The functionality of the program will be identical to running the code in the development environment. The new software in the RAR file now supports mean and median calculations.
+Your executable (`3PB-Analyzer.exe`) is located within the `GUI` folder. The functionality of the program will be identical to running the code in the development environment. 
 
-**Instructions:**
-
-1. **Copy the necessary files:** Copy the `3PB-Analyzer-GUI.exe` file and the `_internal` folder to a new folder. This new folder will be the working directory for the program.  Crucially, the `_internal` folder must be a **direct** subfolder of the folder containing `3PB-Analyzer-GUI.exe`.  Do **not** place the `_internal` folder in a separate location. 
-2. **Run the executable:** Double-click the `3PB-Analyzer-GUI.exe` file to launch the program. The GUI should appear and function as expected. 
-
-**Important Considerations:** 
-
-* **Path Issues:** Files within the `_internal` folder (e.g., data files, images) are assumed to be relative to the `3PB-Analyzer-GUI.exe` file's location.  Therefore, these files must be in the correct folder for the program to work correctly.  Inconsistent or incorrect paths can lead to failure. 
-* **Resource Files:** Ensure all necessary resource files (e.g., images, configuration files, other binary files) are correctly packaged within the `_internal` folder. 
-* **Error Handling:** If you encounter any runtime errors (e.g., files not found), carefully review the file paths within the `_internal` folder to ensure they're valid and complete. 
-
-**Example Usage:** 
-
-If you want to run your program in the `C:\MyPrograms\` directory, copy the entire `GUI` folder (containing `3PB-Analyzer-GUI.exe` and `_internal`) into `C:\MyPrograms\`.  This is **critical** for correct operation. 
-
-C:\MyPrograms
-├── 3PB-Analyzer-GUI.exe
-
-└── _internal/
-
-└── … 
-
-**Project Structure After Packaging:**
-
-You need to copy the *entire* `GUI` folder, not just the `3PB-Analyzer-GUI.exe` file, into the desired working directory.  This is a fundamental requirement for the packaged application to run correctly. 
-
-GUI/ 
-
-├── 3PB-Analyzer-GUI.exe
-
-└── _internal/ 
-
-└── …
-
-**Common Pitfalls and How to Avoid Them:** 
-
-* **Path Errors:** Ensure that file paths used by your Python code (especially when reading data) are correct and properly relative to the `_internal` folder. Incorrect or missing paths will almost certainly cause the program to fail. 
-* **Necessary Files:** Confirm that the `_internal` folder contains all necessary data files and resources. 
-* **Permissions:** Ensure the user running the program has read permissions for all files within the `_internal` folder.  
-
-By understanding and addressing these points, you will significantly improve the reliability of your packaged application. Remember to verify all file paths and folder structure.
