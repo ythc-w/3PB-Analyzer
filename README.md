@@ -169,9 +169,9 @@ The application is primarily accessed through its graphical user interface (GUI)
 
 ------------├── A024Data.csv 
 
-├── GUI/ 
+├── gui/ 
 
-------└── 3PB-Analyzer.part1.rar to 3PB-Analyzer.part13.rar
+------└── 3PB-Analyzer.z01 to 3PB-Analyzer.zip
 
 ├──.gitattributes
 
@@ -199,3 +199,8 @@ The application is primarily accessed through its graphical user interface (GUI)
 
 Your executable (`3PB-Analyzer.exe`) is located within the `GUI` folder. The functionality of the program will be identical to running the code in the development environment. 
 
+
+
+[Notice]
+If you find this software useful in your work, we would appreciate your acknowledgment through citation of the following DOI:
+https://doi.org/10.1016/j.softx.2025.102177
