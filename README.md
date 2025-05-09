@@ -201,6 +201,6 @@ Your executable (`3PB-Analyzer.exe`) is located within the `GUI` folder. The fun
 
 
 
-[Notice]
+## Notice
 If you find this software useful in your work, we would appreciate your acknowledgment through citation of the following DOI:
 https://doi.org/10.1016/j.softx.2025.102177
