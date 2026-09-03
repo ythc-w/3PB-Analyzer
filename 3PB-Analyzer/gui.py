@@ -3,19 +3,24 @@ Main GUI module, responsible for creating and managing the graphical user interf
 """
 
 import logging
+import csv
+import sys
+import tempfile
 import tkinter as tk
+from pathlib import Path
 from tkinter import filedialog, ttk, messagebox
 from threading import Thread
 
 # Import custom modules
-from analysis import save_files  # Import analysis function
-from utils import get_resource_path  # Import function to get resource path
+from analysis import analyse_data, save_files  # Import analysis functions
+from utils import get_resource_path, get_writable_path
 from config import (WINDOW_TITLE, WINDOW_WIDTH, WINDOW_HEIGHT,  # Import window title, width, height
                     DEFAULT_MIN_WINDOW_SIZE, DEFAULT_MAX_WINDOW_SIZE, DEFAULT_Yield_Force_Constant,  DEFAULT_Displacement_Constant,
-                    ICON_PATH, LOG_FILE, LOG_LEVEL, DEFAULT_PRELOAD)  # Import icon path, log file, log level
+                    ICON_PATH, LOG_FILE, LOG_LEVEL, DEFAULT_PRELOAD,
+                    DEFAULT_PRELOAD_METHOD)  # Import icon path, log file, log level
 
 # Initialize logging
-logging.basicConfig(filename=get_resource_path(LOG_FILE), level=LOG_LEVEL,
+logging.basicConfig(filename=get_writable_path(LOG_FILE), level=LOG_LEVEL,
                     format='%(asctime)s - %(levelname)s - %(message)s')
 logging.info("Application started")
 
@@ -89,14 +94,22 @@ class AnalysisApp:
         self.displacement_Constant.insert(0, str(DEFAULT_Displacement_Constant))
         self.displacement_Constant.grid(row=5, column=3, padx=(20, 0), sticky=tk.E)  # shifted content columns + 1
 
-        self.progress_bar = ttk.Progressbar(self.root, length=425, mode='determinate')
-        self.progress_bar.grid(row=6, column=1, columnspan=4, pady=10, sticky="ew")  # shifted content columns + 1
+        # Robust is recommended; legacy remains selectable for traceable comparison.
+        tk.Label(self.root, text="Preload Method:").grid(row=6, column=1, sticky=tk.W, pady=5, padx=(50, 10))
+        self.preload_method = ttk.Combobox(
+            self.root, values=("robust", "legacy"), width=10, state="readonly"
+        )
+        self.preload_method.set(DEFAULT_PRELOAD_METHOD)
+        self.preload_method.grid(row=6, column=2, sticky=tk.W, pady=5)
 
-        tk.Button(self.root, text="Generate Excel And Png", command=self.run_analysis).grid(row=7, column=1, columnspan=4,
+        self.progress_bar = ttk.Progressbar(self.root, length=425, mode='determinate')
+        self.progress_bar.grid(row=7, column=1, columnspan=4, pady=10, sticky="ew")  # shifted content columns + 1
+
+        tk.Button(self.root, text="Generate Excel And Png", command=self.run_analysis).grid(row=8, column=1, columnspan=4,
                                                                                             pady=5)  # shifted content columns + 1
 
         self.failed_files_text = tk.Text(self.root, height=5, width=60)
-        self.failed_files_text.grid(row=8, column=1, columnspan=4, pady=10, sticky="ew")  # shifted content columns + 1
+        self.failed_files_text.grid(row=9, column=1, columnspan=4, pady=10, sticky="ew")  # shifted content columns + 1
 
     def run_analysis(self):
         """Starts the analysis thread"""
@@ -106,12 +119,14 @@ class AnalysisApp:
         preload = float(self.preload_entry.get())
         yfc = float(self.yield_force_Constant.get())
         dispc = float(self.displacement_Constant.get())
+        preload_mode = self.preload_method.get()
         self.progress_bar["value"] = 0
         self.failed_files_text.delete(1.0, tk.END)
         Thread(target=save_files,
                args=(directory, self.update_progress, self.show_completion_message,
-                     min_window_size, max_window_size, self.update_failed_files, preload, yfc, dispc)).start()
-        logging.info(f"Analysis started with min_window_size: {min_window_size}, max_window_size: {max_window_size}, preload: {preload}, yield_force_constant: {yfc}, displacement_constant: {dispc}")
+                     min_window_size, max_window_size, self.update_failed_files,
+                     preload, yfc, dispc, preload_mode)).start()
+        logging.info(f"Analysis started with min_window_size: {min_window_size}, max_window_size: {max_window_size}, preload: {preload}, preload_mode: {preload_mode}, yield_force_constant: {yfc}, displacement_constant: {dispc}")
 
     def update_progress(self, current_step, max_steps):
         """Updates the progress bar"""
@@ -147,5 +162,36 @@ def main():
     logging.info("Application closed")
 
 
+def run_packaged_smoke_test():
+    """Exercise the packaged CSV/preload/regression pipeline without opening GUI."""
+    with tempfile.TemporaryDirectory(prefix="3pb_smoke_") as temp_dir:
+        csv_path = Path(temp_dir) / "smokeData.csv"
+        forces = [-0.01] * 20
+        forces.extend(0.2 + index * (99.8 / 79) for index in range(80))
+        forces.extend([90.0, 40.0, 0.0])
+        with csv_path.open("w", newline="", encoding="utf-8") as handle:
+            writer = csv.writer(handle)
+            writer.writerow([
+                "SetName", "Cycle", "Time_S", "Size_mm",
+                "Displacement_mm", "Force_N",
+            ])
+            for index, force in enumerate(forces):
+                writer.writerow([
+                    "Smoke", "1-Compress", index * 0.2, 40 - index * 0.01,
+                    index * 0.01, force,
+                ])
+        result = analyse_data(
+            str(csv_path), preload=0.0, YFC=1.0, dispc=0.002,
+            preload_mode="robust",
+        )
+        return 0 if result is not None and result["results"][1] > 0 else 1
+
+
 if __name__ == "__main__":
+    # Allows automated verification of the packaged dependency graph without
+    # opening a window or requiring user interaction.
+    if "--smoke-test" in sys.argv:
+        exit_code = run_packaged_smoke_test()
+        logging.info("Packaged application smoke test exit code: %s", exit_code)
+        raise SystemExit(exit_code)
     main()

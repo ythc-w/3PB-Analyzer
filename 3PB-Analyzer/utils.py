@@ -25,3 +25,13 @@ def get_resource_path(relative_path):
          logging.error(f"Error getting resource path: {e}")
          base_path = os.path.abspath(".")
     return os.path.join(base_path, relative_path)
+
+
+def get_writable_path(filename):
+    """Return a per-user writable path suitable for logs in a packaged app."""
+    base_path = os.environ.get("LOCALAPPDATA")
+    if not base_path:
+        base_path = os.path.expanduser("~")
+    app_data_path = os.path.join(base_path, "3PB-Analyzer")
+    os.makedirs(app_data_path, exist_ok=True)
+    return os.path.join(app_data_path, filename)

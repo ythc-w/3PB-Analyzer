@@ -5,10 +5,10 @@ from PyInstaller.utils.hooks import collect_data_files
 added_files = collect_data_files('tkinter')
 
 a = Analysis(
-    ['gui.py', 'analysis.py', 'config.py', 'utils.py'],
+    ['gui.py'],
     pathex=['.'],
     binaries=[],
-    datas=[('3PB.log', '.')],  # 删除图标
+    datas=[],
     hiddenimports=[],
     hookspath=['.'],
     hooksconfig={},

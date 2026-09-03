@@ -15,12 +15,23 @@ from sklearn.metrics import r2_score
 from sklearn.linear_model import LinearRegression
 
 from utils import get_resource_path
-from config import (DEFAULT_X_COLUMN, DEFAULT_Y_COLUMN, OUTPUT_IMAGE_DIR, DEFAULT_PRELOAD, DEFAULT_Yield_Force_Constant,
-                    DEFAULT_Displacement_Constant, Excel_Type)
+from config import (
+    DEFAULT_X_COLUMN, DEFAULT_Y_COLUMN, OUTPUT_IMAGE_DIR, DEFAULT_PRELOAD,
+    DEFAULT_Yield_Force_Constant, DEFAULT_Displacement_Constant, Excel_Type,
+    DEFAULT_PRELOAD_METHOD, PRELOAD_CONFIRM_POINTS, PRELOAD_TREND_POINTS,
+    PRELOAD_MIN_TREND_SLOPE, PRELOAD_BASELINE_POINTS,
+    PRELOAD_BASELINE_ABS_TOLERANCE_N, PRELOAD_MIN_POINTS_AFTER,
+    PRELOAD_ZERO_DISPLACEMENT, PRELOAD_CORRECT_FORCE_BASELINE,
+    STIFFNESS_MIN_POSITIVE_SLOPE, STIFFNESS_MIN_FORCE_SPAN_N,
+    STIFFNESS_MIN_FORCE_SPAN_FRACTION, STIFFNESS_MIN_MONOTONIC_FRACTION,
+    POSTPEAK_FORCE_FRACTION, POSTPEAK_GRADUAL_MIN_POINTS,
+    QC_MAX_EXPECTED_FORCE_N, QC_MAX_EXPECTED_DISPLACEMENT_MM,
+)
+from preload import correct_baseline, detect_preload, preload_quality_control
 
 
-def analyse_data(csv_file, x_column=DEFAULT_X_COLUMN, y_column=DEFAULT_Y_COLUMN, min_window_size=10, max_window_size=20, preload=DEFAULT_PRELOAD,
-                 YFC=None, dispc = None):
+def analyse_data_legacy(csv_file, x_column=DEFAULT_X_COLUMN, y_column=DEFAULT_Y_COLUMN, min_window_size=10, max_window_size=20, preload=DEFAULT_PRELOAD,
+                        YFC=None, dispc=None):
     """
     Performs linear regression analysis.
 
@@ -142,6 +153,326 @@ def analyse_data(csv_file, x_column=DEFAULT_X_COLUMN, y_column=DEFAULT_Y_COLUMN,
         return None
 
 
+def _legacy_diagnostics(csv_file, x_column, y_column, preload):
+    """Describe the legacy start point without changing legacy calculations."""
+    try:
+        df = pd.read_csv(csv_file)
+        force_col = df[y_column]
+        max_index = force_col.idxmax()
+        pre_index_series = force_col[:max_index][force_col[:max_index] <= 0]
+        pre_index = 0 if pre_index_series.empty else pre_index_series.idxmax()
+        eligible = force_col[force_col.index >= pre_index]
+        first_index = eligible[eligible >= preload].index.min()
+        found = first_index is not None and not pd.isna(first_index)
+        return {
+            "preload_method": "legacy",
+            "raw_points": len(df),
+            "threshold": preload,
+            "preload_found": found,
+            "preload_index": int(first_index) if found else None,
+            "preload_force": float(df.loc[first_index, y_column]) if found else None,
+            "preload_displacement": float(df.loc[first_index, x_column]) if found else None,
+            "legacy_pre_index": int(pre_index),
+            "zero_reset": False,
+            "qc_status": "WARNING",
+            "qc_reasons": ["Legacy single-point preload detection was requested."],
+        }
+    except Exception as exc:
+        return {
+            "preload_method": "legacy",
+            "preload_found": False,
+            "preload_index": None,
+            "qc_status": "FAIL",
+            "qc_reasons": [f"Legacy preload diagnostics failed: {exc}"],
+        }
+
+
+def _find_best_stiffness_model(x_data, y_data, peak_relative_index,
+                               min_window_size, max_window_size,
+                               baseline_mad, max_force):
+    """Find the legacy highest-R2 window after rejecting non-loading windows."""
+    best_r2 = -1
+    best_model = None
+    best_start = None
+    best_end = None
+    minimum_span = max(STIFFNESS_MIN_FORCE_SPAN_N,
+                       STIFFNESS_MIN_FORCE_SPAN_FRACTION * max_force)
+    decrease_tolerance = max(PRELOAD_BASELINE_ABS_TOLERANCE_N,
+                             6.0 * (baseline_mad or 0.0))
+    fit_limit = peak_relative_index + 1
+
+    for current_window_size in range(min_window_size, max_window_size + 1):
+        for i in range(0, fit_limit - current_window_size + 1):
+            x_window = x_data[i:i + current_window_size].reshape(-1, 1)
+            y_window = y_data[i:i + current_window_size]
+            if np.ptp(x_window) <= 0 or np.ptp(y_window) < minimum_span:
+                continue
+            monotonic_fraction = float(np.mean(np.diff(y_window) >= -decrease_tolerance))
+            if monotonic_fraction < STIFFNESS_MIN_MONOTONIC_FRACTION:
+                continue
+
+            model = LinearRegression()
+            model.fit(x_window, y_window)
+            if model.coef_[0] <= STIFFNESS_MIN_POSITIVE_SLOPE:
+                continue
+            r2 = r2_score(y_window, model.predict(x_window))
+            if np.isfinite(r2) and r2 > best_r2:
+                best_r2 = r2
+                best_model = model
+                best_start = i
+                best_end = i + current_window_size
+
+    if best_model is None:
+        raise ValueError(
+            "No positive, pre-peak stiffness window passed the configured QC constraints."
+        )
+    return best_model, best_start, best_end, best_r2
+
+
+def analyse_data_robust(csv_file, x_column=DEFAULT_X_COLUMN,
+                        y_column=DEFAULT_Y_COLUMN, min_window_size=10,
+                        max_window_size=20, preload=DEFAULT_PRELOAD,
+                        YFC=None, dispc=None):
+    """Analyse a CSV using robust preload detection and traceable QC."""
+    try:
+        df = pd.read_csv(csv_file)
+        if x_column not in df.columns or y_column not in df.columns:
+            raise ValueError(
+                f"Column '{x_column}' or '{y_column}' not found in the CSV file."
+            )
+        if min_window_size < 2 or max_window_size < min_window_size:
+            raise ValueError("Invalid stiffness window size range.")
+
+        raw_x = pd.to_numeric(df[x_column], errors="coerce").to_numpy(dtype=float)
+        raw_y = pd.to_numeric(df[y_column], errors="coerce").to_numpy(dtype=float)
+        detection = detect_preload(
+            raw_y,
+            raw_x,
+            preload,
+            confirm_points=PRELOAD_CONFIRM_POINTS,
+            trend_points=PRELOAD_TREND_POINTS,
+            min_trend_slope=PRELOAD_MIN_TREND_SLOPE,
+            baseline_points=PRELOAD_BASELINE_POINTS,
+            baseline_abs_tolerance=PRELOAD_BASELINE_ABS_TOLERANCE_N,
+        )
+        detection = preload_quality_control(
+            detection,
+            raw_y,
+            raw_x,
+            min_points_after_preload=PRELOAD_MIN_POINTS_AFTER,
+            max_expected_force=QC_MAX_EXPECTED_FORCE_N,
+            max_expected_displacement=QC_MAX_EXPECTED_DISPLACEMENT_MM,
+        )
+        if not detection.found or detection.index is None:
+            raise ValueError("; ".join(detection.qc_reasons))
+
+        corrected_y = correct_baseline(
+            raw_y,
+            detection.baseline_force,
+            enabled=PRELOAD_CORRECT_FORCE_BASELINE,
+        )
+        corrected_x = raw_x.copy()
+        if PRELOAD_ZERO_DISPLACEMENT:
+            corrected_x -= detection.displacement
+            detection.zero_reset = True
+
+        source_indices = np.arange(len(df))
+        valid_after = (
+            (source_indices >= detection.index)
+            & np.isfinite(corrected_x)
+            & np.isfinite(corrected_y)
+        )
+        retained_indices = source_indices[valid_after]
+        x_trimmed = corrected_x[valid_after]
+        y_trimmed = corrected_y[valid_after]
+        if len(x_trimmed) < min_window_size:
+            raise ValueError("Insufficient finite data after robust preload trimming.")
+
+        max_disp = float(np.max(x_trimmed))
+        peak_relative = int(np.argmax(y_trimmed))
+        max_value = float(y_trimmed[peak_relative])
+        below_half = np.flatnonzero(
+            y_trimmed[peak_relative:] < POSTPEAK_FORCE_FRACTION * max_value
+        )
+        fracture_cut_relative = (
+            peak_relative + int(below_half[0]) if len(below_half) else None
+        )
+        analysis_end = (
+            fracture_cut_relative if fracture_cut_relative is not None else len(x_trimmed)
+        )
+        x_data = x_trimmed[:analysis_end]
+        y_data = y_trimmed[:analysis_end]
+        analysis_source_indices = retained_indices[:analysis_end]
+        if len(x_data) < min_window_size or peak_relative >= len(x_data):
+            raise ValueError("Fracture trimming left insufficient analysis data.")
+
+        best_model, best_start, best_end, best_r2 = _find_best_stiffness_model(
+            x_data,
+            y_data,
+            peak_relative,
+            min_window_size,
+            max_window_size,
+            detection.baseline_mad,
+            max_value,
+        )
+        a = float(best_model.coef_[0])
+        b = float(best_model.intercept_)
+
+        yfc = DEFAULT_Yield_Force_Constant if YFC is None else YFC
+        displacement_constant = (
+            DEFAULT_Displacement_Constant if dispc is None else dispc
+        )
+        next_x = None
+        next_y = None
+        if y_data[best_end - 1] == max_value:
+            next_x = float(x_data[best_end - 1])
+            next_y = float(y_data[best_end - 1])
+        else:
+            for i in range(best_end, len(x_data)):
+                shifted_expected_y = (
+                    yfc * a * (x_data[i] - max_disp * displacement_constant) + b
+                )
+                if 0.8 * shifted_expected_y <= y_data[i] <= shifted_expected_y:
+                    next_x = float(x_data[i])
+                    next_y = float(y_data[i])
+                    break
+        if next_x is None:
+            next_x = float(x_data[best_end - 1])
+            next_y = float(y_data[best_end - 1])
+
+        postyield_displacement = float(x_data[-1] - next_x)
+        auc = float(np.trapezoid(y_data, x_data))
+
+        qc_reasons = list(detection.qc_reasons)
+        qc_status = detection.qc_status
+
+        def add_warning(message):
+            nonlocal qc_status
+            if qc_status == "PASS":
+                qc_status = "WARNING"
+            qc_reasons.append(message)
+
+        postpeak_points = analysis_end - peak_relative
+        if fracture_cut_relative is None:
+            add_warning(
+                "Post-peak force never fell below 50% of maximum; work is to the "
+                "recorded end, not a confirmed fracture endpoint."
+            )
+        elif postpeak_points >= POSTPEAK_GRADUAL_MIN_POINTS:
+            add_warning(
+                f"Post-peak response remained above 50% maximum for "
+                f"{postpeak_points - 1} points before the fracture cutoff."
+            )
+
+        postpeak_values = y_data[peak_relative:]
+        if len(postpeak_values) >= 3:
+            rising_fraction = float(np.mean(np.diff(postpeak_values) > 0))
+            if rising_fraction > 0.3:
+                add_warning(
+                    "Post-peak force is substantially non-monotonic; inspect the "
+                    "fracture tail manually."
+                )
+        else:
+            rising_fraction = 0.0
+
+        diagnostics = detection.to_dict()
+        diagnostics.update({
+            "raw_points": len(df),
+            "preload_method": "robust",
+            "preload_found": detection.found,
+            "preload_index": detection.index,
+            "preload_force": detection.force,
+            "preload_displacement": detection.displacement,
+            "trimmed_start_index": detection.index,
+            "trimmed_points_before_fracture_cut": len(x_trimmed),
+            "analysis_points_after_fracture_cut": len(x_data),
+            "analysis_source_start_index": int(analysis_source_indices[0]),
+            "analysis_source_end_index": int(analysis_source_indices[-1]),
+            "fracture_cut_source_index": int(retained_indices[fracture_cut_relative])
+            if fracture_cut_relative is not None
+            else None,
+            "fracture_threshold_reached": fracture_cut_relative is not None,
+            "postpeak_points_before_cut": postpeak_points,
+            "postpeak_rising_fraction": rising_fraction,
+            "fit_start_relative": best_start,
+            "fit_end_relative": best_end,
+            "fit_start_source_index": int(analysis_source_indices[best_start]),
+            "fit_end_source_index": int(analysis_source_indices[best_end - 1]),
+            "fit_r2": best_r2,
+            "qc_status": qc_status,
+            "qc_reasons": qc_reasons,
+            "zero_reset": detection.zero_reset,
+        })
+
+        results_plot = {
+            "x_data": x_data,
+            "y_data": y_data,
+            "a": a,
+            "b": b,
+            "best_start": best_start,
+            "best_end": best_end,
+            "yield_force_x": next_x,
+            "yield_force_y": next_y,
+            "raw_x_data": raw_x,
+            "raw_y_data": raw_y,
+            "preload_index": detection.index,
+            "preload_threshold": preload,
+            "analysis_source_indices": analysis_source_indices,
+        }
+        output_result = [
+            max_value,
+            a,
+            next_y,
+            postyield_displacement,
+            auc,
+        ]
+        return {
+            "results": output_result,
+            "results_plot": results_plot,
+            "diagnostics": diagnostics,
+        }
+    except Exception as e:
+        logging.error(f"Error in robust analyse_data for {csv_file}: {e}")
+        return None
+
+
+def analyse_data(csv_file, x_column=DEFAULT_X_COLUMN, y_column=DEFAULT_Y_COLUMN,
+                 min_window_size=10, max_window_size=20,
+                 preload=DEFAULT_PRELOAD, YFC=None, dispc=None,
+                 preload_mode=DEFAULT_PRELOAD_METHOD):
+    """Dispatch to the traceable robust path or the preserved legacy path."""
+    mode = str(preload_mode).strip().lower()
+    if mode == "legacy":
+        result = analyse_data_legacy(
+            csv_file,
+            x_column=x_column,
+            y_column=y_column,
+            min_window_size=min_window_size,
+            max_window_size=max_window_size,
+            preload=preload,
+            YFC=YFC,
+            dispc=dispc,
+        )
+        if result is not None:
+            result["diagnostics"] = _legacy_diagnostics(
+                csv_file, x_column, y_column, preload
+            )
+        return result
+    if mode != "robust":
+        logging.error(f"Unknown preload_mode: {preload_mode}")
+        return None
+    return analyse_data_robust(
+        csv_file,
+        x_column=x_column,
+        y_column=y_column,
+        min_window_size=min_window_size,
+        max_window_size=max_window_size,
+        preload=preload,
+        YFC=YFC,
+        dispc=dispc,
+    )
+
+
 def create_scatter_plot(title="3point", xlabel=DEFAULT_X_COLUMN, ylabel=DEFAULT_Y_COLUMN, output_image="scatter_plot.png", results_plot=None):
     """
         Creates a scatter plot.
@@ -190,7 +521,8 @@ def create_scatter_plot(title="3point", xlabel=DEFAULT_X_COLUMN, ylabel=DEFAULT_
 
 
 def save_files(file_path, progress_callback, on_complete, min_window_size, max_window_size, failed_files_callback, preload=DEFAULT_PRELOAD,
-               YFC=DEFAULT_Yield_Force_Constant, disp_c=DEFAULT_Displacement_Constant):
+               YFC=DEFAULT_Yield_Force_Constant, disp_c=DEFAULT_Displacement_Constant,
+               preload_mode=DEFAULT_PRELOAD_METHOD):
     """
     Analyzes all CSV files in a specified folder and writes the results to an Excel file.
 
@@ -204,6 +536,7 @@ def save_files(file_path, progress_callback, on_complete, min_window_size, max_w
         preload (float, optional): The preload value. Defaults to `DEFAULT_PRELOAD`.
     """
     all_results = []
+    qc_rows = []
     png_dir = get_resource_path(file_path + OUTPUT_IMAGE_DIR)
     os.makedirs(png_dir, exist_ok=True)
 
@@ -222,18 +555,45 @@ def save_files(file_path, progress_callback, on_complete, min_window_size, max_w
             file_name = os.path.basename(os.path.dirname(f))
             output_image = get_resource_path(os.path.join(png_dir, file_name + '.png'))
             analysis_output = analyse_data(f, x_column=DEFAULT_X_COLUMN, y_column=DEFAULT_Y_COLUMN, min_window_size=min_window_size,
-                                           max_window_size=max_window_size, preload=preload, YFC=YFC, dispc=disp_c)
+                                           max_window_size=max_window_size, preload=preload, YFC=YFC, dispc=disp_c,
+                                           preload_mode=preload_mode)
+            if analysis_output is None:
+                raise ValueError("analyse_data returned no result")
             result = analysis_output["results"]
             my_plot = analysis_output["results_plot"]
+            diagnostics = analysis_output.get("diagnostics", {})
             create_scatter_plot(title=file_name, output_image=output_image, results_plot=my_plot)
 
             if result:
                 all_results.append([file_name] + result)
+                qc_rows.append([
+                    file_name,
+                    diagnostics.get("preload_method", preload_mode),
+                    diagnostics.get("raw_points"),
+                    diagnostics.get("threshold", preload),
+                    diagnostics.get("last_baseline_index"),
+                    diagnostics.get("preload_index"),
+                    diagnostics.get("preload_force"),
+                    diagnostics.get("preload_displacement"),
+                    diagnostics.get("trimmed_points_before_fracture_cut"),
+                    diagnostics.get("analysis_points_after_fracture_cut"),
+                    diagnostics.get("zero_reset", False),
+                    diagnostics.get("fit_start_source_index"),
+                    diagnostics.get("fit_end_source_index"),
+                    diagnostics.get("fracture_threshold_reached"),
+                    diagnostics.get("qc_status", "WARNING"),
+                    "; ".join(diagnostics.get("qc_reasons", [])),
+                ])
             else:
                 failed_files.append(os.path.basename(f))
         except Exception as e:
             logging.error(f"Error processing file {f}: {e}")
             failed_files.append(os.path.basename(f))
+            qc_rows.append([
+                os.path.basename(os.path.dirname(f)), preload_mode, None, preload,
+                None, None, None, None, None, None, False, None, None, None,
+                "FAIL", str(e),
+            ])
         progress_callback(index + 1, total_files)
 
     wb = Workbook()
@@ -287,6 +647,25 @@ def save_files(file_path, progress_callback, on_complete, min_window_size, max_w
         for col in range(2, ws.max_column + 1):
             cell = ws.cell(row=row, column=col)
             cell.number_format = '0.0000'
+
+    qc_ws = wb.create_sheet("Preload QC")
+    qc_headers = [
+        "File Name", "Method", "Raw Points", "Preload Threshold",
+        "Last Baseline Index", "Preload Index", "Preload Force",
+        "Preload Displacement", "Points After Preload", "Analysis Points",
+        "Zero Reset", "Fit Start Index", "Fit End Index",
+        "50% Fracture Reached", "QC Status", "QC Reasons",
+    ]
+    qc_ws.append(qc_headers)
+    for row in qc_rows:
+        qc_ws.append(row)
+    for row in qc_ws.iter_rows():
+        for cell in row:
+            cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+            cell.border = thin_border
+    for column in range(1, len(qc_headers) + 1):
+        qc_ws.column_dimensions[chr(64 + column)].width = 18
+    qc_ws.column_dimensions['P'].width = 70
     try:
         excel_file_path = get_resource_path(file_path + ".xlsx")
         wb.save(excel_file_path)
