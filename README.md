@@ -64,11 +64,6 @@ pip install -r requirements.txt
 python three_point_bending_gui.py
 ```
 
-或者 Windows：
-
-``` bat
-run_gui.bat
-```
 
 基本流程：
 
